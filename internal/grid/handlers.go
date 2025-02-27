@@ -23,8 +23,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 
+	"github.com/minio/minio/internal/bpool"
 	"github.com/minio/minio/internal/hash/sha256"
 	xioutil "github.com/minio/minio/internal/ioutil"
 	"github.com/tinylib/msgp/msgp"
@@ -114,6 +114,8 @@ const (
 	HandlerRenameData2
 	HandlerCheckParts2
 	HandlerRenamePart
+	HandlerClearUploadID
+	HandlerCheckParts3
 
 	// Add more above here ^^^
 	// If all handlers are used, the type of Handler can be changed.
@@ -195,7 +197,9 @@ var handlerPrefixes = [handlerLast]string{
 	HandlerRenameDataInline:            storagePrefix,
 	HandlerRenameData2:                 storagePrefix,
 	HandlerCheckParts2:                 storagePrefix,
+	HandlerCheckParts3:                 storagePrefix,
 	HandlerRenamePart:                  storagePrefix,
+	HandlerClearUploadID:               peerPrefix,
 }
 
 const (
@@ -427,12 +431,12 @@ func recycleFunc[RT RoundTripper](newRT func() RT) (newFn func() RT, recycle fun
 			}
 		}
 	}
-	pool := sync.Pool{
-		New: func() interface{} {
+	pool := bpool.Pool[RT]{
+		New: func() RT {
 			return newRT()
 		},
 	}
-	return func() RT { return pool.Get().(RT) },
+	return pool.Get,
 		func(r RT) {
 			if r != rZero {
 				//nolint:staticcheck // SA6002 IT IS A GENERIC VALUE!
@@ -628,8 +632,8 @@ type StreamTypeHandler[Payload, Req, Resp RoundTripper] struct {
 	// Will be 0 if newReq is nil.
 	InCapacity int
 
-	reqPool        sync.Pool
-	respPool       sync.Pool
+	reqPool        bpool.Pool[Req]
+	respPool       bpool.Pool[Resp]
 	id             HandlerID
 	newPayload     func() Payload
 	nilReq         Req
@@ -649,13 +653,13 @@ func NewStream[Payload, Req, Resp RoundTripper](h HandlerID, newPayload func() P
 
 	s := newStreamHandler[Payload, Req, Resp](h)
 	if newReq != nil {
-		s.reqPool.New = func() interface{} {
+		s.reqPool.New = func() Req {
 			return newReq()
 		}
 	} else {
 		s.InCapacity = 0
 	}
-	s.respPool.New = func() interface{} {
+	s.respPool.New = func() Resp {
 		return newResp()
 	}
 	s.newPayload = newPayload
@@ -678,7 +682,7 @@ func (h *StreamTypeHandler[Payload, Req, Resp]) NewPayload() Payload {
 // NewRequest creates a new request.
 // The struct may be reused, so caller should clear any fields.
 func (h *StreamTypeHandler[Payload, Req, Resp]) NewRequest() Req {
-	return h.reqPool.Get().(Req)
+	return h.reqPool.Get()
 }
 
 // PutRequest will accept a request for reuse.
@@ -702,7 +706,7 @@ func (h *StreamTypeHandler[Payload, Req, Resp]) PutResponse(r Resp) {
 // NewResponse creates a new response.
 // Handlers can use this to create a reusable response.
 func (h *StreamTypeHandler[Payload, Req, Resp]) NewResponse() Resp {
-	return h.respPool.Get().(Resp)
+	return h.respPool.Get()
 }
 
 func newStreamHandler[Payload, Req, Resp RoundTripper](h HandlerID) *StreamTypeHandler[Payload, Req, Resp] {

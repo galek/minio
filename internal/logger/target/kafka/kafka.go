@@ -188,7 +188,6 @@ func (h *Target) startKafkaLogger() {
 		// We are not allowed to add when logCh is nil
 		h.wg.Add(1)
 		defer h.wg.Done()
-
 	}
 	h.logChMu.RUnlock()
 
@@ -315,7 +314,8 @@ func (h *Target) IsOnline(_ context.Context) bool {
 func (h *Target) Send(ctx context.Context, entry interface{}) error {
 	if h.store != nil {
 		// save the entry to the queue store which will be replayed to the target.
-		return h.store.Put(entry)
+		_, err := h.store.Put(entry)
+		return err
 	}
 	h.logChMu.RLock()
 	defer h.logChMu.RUnlock()
@@ -344,7 +344,7 @@ func (h *Target) Send(ctx context.Context, entry interface{}) error {
 
 // SendFromStore - reads the log from store and sends it to kafka.
 func (h *Target) SendFromStore(key store.Key) (err error) {
-	auditEntry, err := h.store.Get(key.Name)
+	auditEntry, err := h.store.Get(key)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -358,7 +358,7 @@ func (h *Target) SendFromStore(key store.Key) (err error) {
 		return
 	}
 	// Delete the event from store.
-	return h.store.Del(key.Name)
+	return h.store.Del(key)
 }
 
 // Cancel - cancels the target
